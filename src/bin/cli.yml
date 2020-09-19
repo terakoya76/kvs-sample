@@ -1,0 +1,35 @@
+name: kvs
+author: terakoya76 <terako.studio@gmail.com>
+about: provide kvs operation
+
+settings:
+- SubcommandRequiredElseHelp
+
+subcommands:
+- set:
+    about: kvs set <KEY> <VALUE>
+    args:
+    - key:
+        help: key
+        required: true
+        index: 1
+    - value:
+        help: value
+        required: true
+        index: 2
+
+- get:
+    about: kvs get <KEY>
+    args:
+    - key:
+        help: key
+        required: true
+        index: 1
+
+- rm:
+    about: kvs rm <KEY>
+    args:
+    - key:
+        help: key
+        required: true
+        index: 1
