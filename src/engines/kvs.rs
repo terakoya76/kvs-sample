@@ -9,7 +9,7 @@ use if_chain::if_chain;
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
 
-use crate::{KvsError, Result};
+use crate::{KvsEngine, KvsError, Result};
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 
@@ -20,7 +20,7 @@ const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 /// A `BTreeMap` in memory stores the keys and the value locations for fast query.
 ///
 /// ```rust
-/// # use kvs::{KvStore,Result};
+/// # use kvs::{KvsEngine,KvStore,Result};
 /// # fn try_main() -> Result<()> {
 /// use std::env::current_dir;
 /// let mut store = KvStore::open(current_dir()?)?;
@@ -45,6 +45,87 @@ pub struct KvStore {
     // the number of bytes representing "stale" commands that could be
     // deleted during a compaction.
     uncompacted: u64,
+}
+
+impl KvsEngine for KvStore {
+    /// Sets the value of a string key to a string.
+    ///
+    /// If the key already exists, the previous value will be overwritten.
+    ///
+    /// # Errors
+    ///
+    /// It propagates I/O or serialization errors during writing the log.
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        let cmd = Command::set(key, value);
+        let pos = self.writer.pos;
+        serde_json::to_writer(&mut self.writer, &cmd)?;
+        self.writer.flush()?;
+
+        if_chain! {
+            if let Command::Set { key, .. } = cmd;
+            if let Some(old_cmd) = self
+                .index
+                .insert(key, (self.current_gen, pos..self.writer.pos).into());
+            then {
+                self.uncompacted += old_cmd.len;
+            }
+        }
+
+        if self.uncompacted > COMPACTION_THRESHOLD {
+            self.compact()?;
+        }
+
+        Ok(())
+    }
+
+    /// Gets the string value of a given string key.
+    ///
+    /// Returns `None` if the given key does not exist.
+    ///
+    /// # Errors
+    ///
+    /// It returns `KvsError::UnexpectedCommandType` if the given command type unexpected.
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        if let Some(cmd_pos) = self.index.get(&key) {
+            let reader = self
+                .readers
+                .get_mut(&cmd_pos.gen)
+                .expect("Cannot find log reader");
+            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
+
+            let cmd_reader = reader.take(cmd_pos.len);
+            if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
+                Ok(Some(value))
+            } else {
+                Err(KvsError::UnexpectedCommandType)
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Removes a given key.
+    ///
+    /// # Errors
+    ///
+    /// It returns `KvsError::KeyNotFound` if the given key is not found.
+    ///
+    /// It propagates I/O or serialization errors during writing the log.
+    fn remove(&mut self, key: String) -> Result<()> {
+        if self.index.contains_key(&key) {
+            let cmd = Command::remove(key);
+            serde_json::to_writer(&mut self.writer, &cmd)?;
+            self.writer.flush()?;
+
+            if let Command::Remove { key } = cmd {
+                let old_cmd = self.index.remove(&key).expect("key not found");
+                self.uncompacted += old_cmd.len;
+            }
+            Ok(())
+        } else {
+            Err(KvsError::KeyNotFound)
+        }
+    }
 }
 
 impl KvStore {
@@ -82,85 +163,6 @@ impl KvStore {
             index,
             uncompacted,
         })
-    }
-
-    /// Sets the value of a string key to a string.
-    ///
-    /// If the key already exists, the previous value will be overwritten.
-    ///
-    /// # Errors
-    ///
-    /// It propagates I/O or serialization errors during writing the log.
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        let cmd = Command::set(key, value);
-        let pos = self.writer.pos;
-        serde_json::to_writer(&mut self.writer, &cmd)?;
-        self.writer.flush()?;
-
-        if_chain! {
-            if let Command::Set { key, .. } = cmd;
-            if let Some(old_cmd) = self
-                .index
-                .insert(key, (self.current_gen, pos..self.writer.pos).into());
-            then {
-                self.uncompacted += old_cmd.len;
-            }
-        }
-
-        if self.uncompacted > COMPACTION_THRESHOLD {
-            self.compact()?;
-        }
-
-        Ok(())
-    }
-
-    /// Gets the string value of a given string key.
-    ///
-    /// Returns `None` if the given key does not exist.
-    ///
-    /// # Errors
-    ///
-    /// It returns `KvsError::UnexpectedCommandType` if the given command type unexpected.
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        if let Some(cmd_pos) = self.index.get(&key) {
-            let reader = self
-                .readers
-                .get_mut(&cmd_pos.gen)
-                .expect("Cannot find log reader");
-            reader.seek(SeekFrom::Start(cmd_pos.pos))?;
-
-            let cmd_reader = reader.take(cmd_pos.len);
-            if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
-                Ok(Some(value))
-            } else {
-                Err(KvsError::UnexpectedCommandType)
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Removes a given key.
-    ///
-    /// # Errors
-    ///
-    /// It returns `KvsError::KeyNotFound` if the given key is not found.
-    ///
-    /// It propagates I/O or serialization errors during writing the log.
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        if self.index.contains_key(&key) {
-            let cmd = Command::remove(key);
-            serde_json::to_writer(&mut self.writer, &cmd)?;
-            self.writer.flush()?;
-
-            if let Command::Remove { key } = cmd {
-                let old_cmd = self.index.remove(&key).expect("key not found");
-                self.uncompacted += old_cmd.len;
-            }
-            Ok(())
-        } else {
-            Err(KvsError::KeyNotFound)
-        }
     }
 
     /// Clears stale entries in the log.

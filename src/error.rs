@@ -1,4 +1,4 @@
-use std::io;
+use std::string::FromUtf8Error;
 
 use thiserror::Error;
 
@@ -7,7 +7,7 @@ use thiserror::Error;
 pub enum KvsError {
     /// IO error.
     #[error("{}", .0)]
-    Io(#[from] io::Error),
+    Io(#[from] std::io::Error),
 
     /// Serialization or deserialization error.
     #[error("{}", .0)]
@@ -21,6 +21,18 @@ pub enum KvsError {
     /// It indicated a corrupted log or a program bug.
     #[error("Unexpected command type")]
     UnexpectedCommandType,
+
+    /// Key or value is invalid UTF-8 sequence
+    #[error("UTF-8 error: {}", .0)]
+    Utf8(#[from] FromUtf8Error),
+
+    /// Sled error
+    #[error( "sled error: {}", .0)]
+    Sled(#[from] sled::Error),
+
+    /// Error with a string message
+    #[error("{}", .0)]
+    StringError(String),
 }
 
 /// Result type for kvs.
