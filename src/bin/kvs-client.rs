@@ -6,10 +6,7 @@ use std::process::exit;
 
 use clap::Clap;
 
-use kvs::{KvsClient, Result};
-
-const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
-const ADDRESS_FORMAT: &str = "IP:PORT";
+use kvs::{KvsClient, Result, ADDRESS_FORMAT, DEFAULT_LISTENING_ADDRESS};
 
 #[derive(Debug, Clap)]
 #[clap(name = "kvs-client", version, author, about)]
@@ -27,8 +24,8 @@ enum Command {
         #[clap(
             long,
             about = "Sets the server address",
-            value_name = "ADDRESS_FORMAT",
-            default_value = "DEFAULT_LISTENING_ADDRESS",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS,
             parse(try_from_str)
         )]
         addr: SocketAddr,
@@ -42,8 +39,8 @@ enum Command {
         #[clap(
             long,
             about = "Sets the server address",
-            value_name = "ADDRESS_FORMAT",
-            default_value = "DEFAULT_LISTENING_ADDRESS",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS,
             parse(try_from_str)
         )]
         addr: SocketAddr,
@@ -55,8 +52,8 @@ enum Command {
         #[clap(
             long,
             about = "Sets the server address",
-            value_name = "ADDRESS_FORMAT",
-            default_value = "DEFAULT_LISTENING_ADDRESS",
+            value_name = ADDRESS_FORMAT,
+            default_value = DEFAULT_LISTENING_ADDRESS,
             parse(try_from_str)
         )]
         addr: SocketAddr,

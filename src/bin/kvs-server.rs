@@ -16,7 +16,6 @@ use log::LevelFilter;
 
 use kvs::*;
 
-const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
 const DEFAULT_ENGINE: Engine = Engine::kvs;
 
 #[derive(Clap, Debug)]
@@ -25,8 +24,8 @@ struct Opt {
     #[clap(
         long,
         about = "Sets the listening address",
-        value_name = "IP:PORT",
-        default_value = "DEFAULT_LISTENING_ADDRESS",
+        value_name = ADDRESS_FORMAT,
+        default_value = DEFAULT_LISTENING_ADDRESS,
         parse(try_from_str)
     )]
     addr: SocketAddr,
@@ -88,15 +87,15 @@ fn run(opt: Opt) -> Result<()> {
     // write engine to engine file
     fs::write(current_dir()?.join("engine"), format!("{}", engine))?;
 
+    let pool = RayonThreadPool::new(num_cpus::get() as u32)?;
     match engine {
-        Engine::kvs => run_with_engine(KvStore::open(current_dir()?)?, opt.addr),
-        Engine::sled => run_with_engine(SledKvsEngine::new(sled::open(current_dir()?)?), opt.addr),
+        Engine::kvs => run_with(KvStore::open(current_dir()?)?, pool, opt.addr),
+        Engine::sled => run_with(
+            SledKvsEngine::new(sled::open(current_dir()?)?),
+            pool,
+            opt.addr,
+        ),
     }
-}
-
-fn run_with_engine<E: KvsEngine>(engine: E, addr: SocketAddr) -> Result<()> {
-    let server = KvsServer::new(engine);
-    server.run(addr)
 }
 
 fn current_engine() -> Result<Option<Engine>> {
