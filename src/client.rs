@@ -1,59 +1,85 @@
-use std::io::{BufReader, BufWriter, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::convert::TryInto;
+use std::net::{SocketAddr, TcpStream};
 
-use serde::Deserialize;
-use serde_json::de::{Deserializer, IoRead};
+use smol::io::{BufReader, BufWriter};
+use smol::prelude::{AsyncReadExt, AsyncWriteExt};
+use smol::Async;
 
-use crate::common::{GetResponse, RemoveResponse, Request, SetResponse};
+use crate::common::{PacketSize, Request, Response};
 use crate::{KvsError, Result};
 
 /// Key value store client
 pub struct KvsClient {
-    reader: Deserializer<IoRead<BufReader<TcpStream>>>,
-    writer: BufWriter<TcpStream>,
+    reader: BufReader<Async<TcpStream>>,
+    writer: BufWriter<Async<TcpStream>>,
 }
 
 impl KvsClient {
     /// Connect to `addr` to access `KvsServer`.
-    pub fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self> {
-        let tcp_reader = TcpStream::connect(addr)?;
-        let tcp_writer = tcp_reader.try_clone()?;
+    pub async fn connect<A>(addr: A) -> Result<Self>
+    where
+        A: Into<SocketAddr>,
+    {
+        let tcp_reader = Async::<TcpStream>::connect(addr).await?;
+        let tcp_writer = Async::new(tcp_reader.get_ref().try_clone()?)?;
         Ok(KvsClient {
-            reader: Deserializer::from_reader(BufReader::new(tcp_reader)),
+            reader: BufReader::new(tcp_reader),
             writer: BufWriter::new(tcp_writer),
         })
     }
 
     /// Get the value of a given key from the server.
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
-        serde_json::to_writer(&mut self.writer, &Request::Get { key })?;
-        self.writer.flush()?;
-        let resp = GetResponse::deserialize(&mut self.reader)?;
+    pub async fn get(&mut self, key: String) -> Result<Option<String>> {
+        let b = serde_json::to_vec(&Request::Get { key })?;
+        let size = PacketSize::new(b.len().try_into()?);
+        self.writer.write(&size.to_bytes()).await?;
+        self.writer.write(&b).await?;
+        self.writer.flush().await?;
+
+        let mut contents = Vec::new();
+        self.reader.read_to_end(&mut contents).await?;
+        let resp: Response = serde_json::from_slice(&contents)?;
         match resp {
-            GetResponse::Ok(value) => Ok(value),
-            GetResponse::Err(msg) => Err(KvsError::StringError(msg)),
+            Response::Get(value) => Ok(value),
+            Response::Err(msg) => Err(KvsError::StringError(msg)),
+            _ => Err(KvsError::StringError("Invalid response".to_owned())),
         }
     }
 
     /// Set the value of a string key in the server.
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        serde_json::to_writer(&mut self.writer, &Request::Set { key, value })?;
-        self.writer.flush()?;
-        let resp = SetResponse::deserialize(&mut self.reader)?;
+    pub async fn set(&mut self, key: String, value: String) -> Result<()> {
+        let b = serde_json::to_vec(&Request::Set { key, value })?;
+        let size = PacketSize::new(b.len().try_into()?);
+        self.writer.write(&size.to_bytes()).await?;
+        self.writer.write(&b).await?;
+        self.writer.flush().await?;
+
+        let mut contents = Vec::new();
+        self.reader.read_to_end(&mut contents).await?;
+        let resp: Response = serde_json::from_slice(&contents)?;
         match resp {
-            SetResponse::Ok(_) => Ok(()),
-            SetResponse::Err(msg) => Err(KvsError::StringError(msg)),
+            Response::Set => Ok(()),
+            Response::Err(msg) => Err(KvsError::StringError(msg)),
+            _ => Err(KvsError::StringError("Invalid response".to_owned())),
         }
     }
 
     /// Remove a string key in the server.
-    pub fn remove(&mut self, key: String) -> Result<()> {
-        serde_json::to_writer(&mut self.writer, &Request::Remove { key })?;
-        self.writer.flush()?;
-        let resp = RemoveResponse::deserialize(&mut self.reader)?;
+    pub async fn remove(&mut self, key: String) -> Result<()> {
+        let b = serde_json::to_vec(&Request::Remove { key })?;
+        let size = PacketSize::new(b.len().try_into()?);
+        self.writer.write(&size.to_bytes()).await?;
+        self.writer.write(&b).await?;
+        self.writer.flush().await?;
+
+        let mut contents = Vec::new();
+        self.reader.read_to_end(&mut contents).await?;
+        self.writer.close().await?;
+        let resp: Response = serde_json::from_slice(&contents)?;
         match resp {
-            RemoveResponse::Ok(_) => Ok(()),
-            RemoveResponse::Err(msg) => Err(KvsError::StringError(msg)),
+            Response::Remove => Ok(()),
+            Response::Err(msg) => Err(KvsError::StringError(msg)),
+            _ => Err(KvsError::StringError("Invalid response".to_owned())),
         }
     }
 }

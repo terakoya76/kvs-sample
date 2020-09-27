@@ -34,7 +34,8 @@ struct Opt {
         about = "Sets the storage engine",
         value_name = "ENGINE-NAME",
         possible_values = &Engine::VARIANTS,
-        arg_enum
+        arg_enum,
+        parse(try_from_str)
     )]
     engine: Option<Engine>,
 }
@@ -70,15 +71,16 @@ fn main() {
             error!("Wrong engine!");
             exit(1);
         }
-        run(opt)
+
+        smol::block_on(run(opt))
     });
     if let Err(e) = res {
-        error!("{}", e);
+        eprintln!("{}", e);
         exit(1);
     }
 }
 
-fn run(opt: Opt) -> Result<()> {
+async fn run(opt: Opt) -> Result<()> {
     let engine = opt.engine.unwrap_or(DEFAULT_ENGINE);
     info!("kvs-server {}", env!("CARGO_PKG_VERSION"));
     info!("Storage engine: {}", engine);
@@ -87,15 +89,25 @@ fn run(opt: Opt) -> Result<()> {
     // write engine to engine file
     fs::write(current_dir()?.join("engine"), format!("{}", engine))?;
 
-    let pool = RayonThreadPool::new(num_cpus::get() as u32)?;
+    let concurrency = num_cpus::get() as u32;
     match engine {
-        Engine::kvs => run_with(KvStore::open(current_dir()?)?, pool, opt.addr),
-        Engine::sled => run_with(
-            SledKvsEngine::new(sled::open(current_dir()?)?),
-            pool,
-            opt.addr,
-        ),
+        Engine::kvs => {
+            run_with(
+                KvStore::<RayonThreadPool>::open(current_dir()?, concurrency)?,
+                opt.addr,
+            )
+            .await?
+        }
+        Engine::sled => {
+            run_with(
+                SledKvsEngine::<RayonThreadPool>::new(sled::open(current_dir()?)?, concurrency)?,
+                opt.addr,
+            )
+            .await?
+        }
     }
+
+    Ok(())
 }
 
 fn current_engine() -> Result<Option<Engine>> {

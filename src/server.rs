@@ -1,10 +1,12 @@
-use std::io::{BufReader, BufWriter, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::convert::TryInto;
+use std::net::{SocketAddr, TcpListener, TcpStream};
 
-use crate::common::{GetResponse, RemoveResponse, Request, SetResponse};
-use crate::thread_pool::ThreadPool;
+use smol::io::{BufReader, BufWriter};
+use smol::prelude::{AsyncReadExt, AsyncWriteExt};
+use smol::Async;
+
+use crate::common::{PacketSize, Request, Response};
 use crate::{KvsEngine, Result};
-use serde_json::Deserializer;
 
 /// The default listening ADDRESS of KvsServer
 pub const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
@@ -12,74 +14,69 @@ pub const DEFAULT_LISTENING_ADDRESS: &str = "127.0.0.1:4000";
 /// The format of listening ADDRESS
 pub const ADDRESS_FORMAT: &str = "IP:PORT";
 
-/// The server of a key value store.
-pub struct KvsServer<E: KvsEngine, P: ThreadPool> {
-    engine: E,
-    pool: P,
+/// create new KvsEngine instance and run it
+pub async fn run_with<E: KvsEngine>(engine: E, addr: SocketAddr) -> Result<()> {
+    let server = KvsServer::new(engine);
+    server.run(addr).await
 }
 
-impl<E: KvsEngine, P: ThreadPool> KvsServer<E, P> {
+/// The server of a key value store.
+pub struct KvsServer<E: KvsEngine> {
+    engine: E,
+}
+
+impl<E: KvsEngine> KvsServer<E> {
     /// Create a `KvsServer` with a given storage engine.
-    pub fn new(engine: E, pool: P) -> Self {
-        KvsServer { engine, pool }
+    pub fn new(engine: E) -> Self {
+        KvsServer { engine }
     }
 
     /// Run the server listening on the given address
-    pub fn run<A: ToSocketAddrs>(&self, addr: A) -> Result<()> {
-        let listener = TcpListener::bind(addr)?;
-        for stream in listener.incoming() {
+    pub async fn run<A>(&self, addr: A) -> Result<()>
+    where
+        A: Into<SocketAddr>,
+    {
+        let listener = Async::<TcpListener>::bind(addr)?;
+        loop {
+            let (stream, _) = listener.accept().await?;
             let engine = self.engine.clone();
-            self.pool.spawn(move || match stream {
-                Ok(stream) => {
-                    if let Err(e) = serve(engine, stream) {
-                        error!("Error on serving client: {}", e);
-                    }
-                }
-                Err(e) => error!("Connection failed: {}", e),
-            })
+            smol::spawn(serve(engine, stream)).detach();
         }
-        Ok(())
     }
 }
 
-fn serve<E: KvsEngine>(engine: E, tcp: TcpStream) -> Result<()> {
-    let peer_addr = tcp.peer_addr()?;
-    let reader = BufReader::new(&tcp);
-    let mut writer = BufWriter::new(&tcp);
-    let req_reader = Deserializer::from_reader(reader).into_iter::<Request>();
+async fn serve<E: KvsEngine>(engine: E, stream: Async<TcpStream>) -> Result<()> {
+    let peer_addr = stream.get_ref().peer_addr()?;
+    let mut reader = BufReader::new(&stream);
+    let mut writer = BufWriter::new(&stream);
 
-    macro_rules! send_resp {
-        ($resp:expr) => {{
-            let resp = $resp;
-            serde_json::to_writer(&mut writer, &resp)?;
-            writer.flush()?;
-            debug!("Response sent to {}: {:?}", peer_addr, resp);
-        };};
-    }
+    let mut size = vec![0_u8; 8];
+    reader.read_exact(&mut size).await?;
+    let n = PacketSize::from_bytes(&mut size.as_ref()).get_size();
+    info!("Receiving next {} bytes as request", n);
 
-    for req in req_reader {
-        let req = req?;
-        debug!("Receive request from {}: {:?}", peer_addr, req);
-        match req {
-            Request::Get { key } => send_resp!(match engine.get(key) {
-                Ok(value) => GetResponse::Ok(value),
-                Err(e) => GetResponse::Err(format!("{}", e)),
-            }),
-            Request::Set { key, value } => send_resp!(match engine.set(key, value) {
-                Ok(_) => SetResponse::Ok(()),
-                Err(e) => SetResponse::Err(format!("{}", e)),
-            }),
-            Request::Remove { key } => send_resp!(match engine.remove(key) {
-                Ok(_) => RemoveResponse::Ok(()),
-                Err(e) => RemoveResponse::Err(format!("{}", e)),
-            }),
-        };
-    }
+    let mut contents = vec![0; n.try_into()?];
+    reader.read_exact(&mut contents).await?;
+    let req: Request = serde_json::from_slice(&contents)?;
+    info!("Receive request from {}: {:?}", peer_addr, req);
+
+    let res = match req {
+        Request::Get { key } => match engine.get(key).await {
+            Ok(value) => Response::Get(value),
+            Err(e) => Response::Err(format!("{}", e)),
+        },
+        Request::Set { key, value } => match engine.set(key, value).await {
+            Ok(_) => Response::Set,
+            Err(e) => Response::Err(format!("{}", e)),
+        },
+        Request::Remove { key } => match engine.remove(key).await {
+            Ok(_) => Response::Remove,
+            Err(e) => Response::Err(format!("{}", e)),
+        },
+    };
+    let j = serde_json::to_vec(&res)?;
+    writer.write(&j).await?;
+    writer.flush().await?;
+
     Ok(())
-}
-
-/// create new KvsEngine instance and run it
-pub fn run_with<E: KvsEngine, P: ThreadPool>(engine: E, pool: P, addr: SocketAddr) -> Result<()> {
-    let server = KvsServer::new(engine, pool);
-    server.run(addr)
 }

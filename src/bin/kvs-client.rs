@@ -8,14 +8,14 @@ use clap::Clap;
 
 use kvs::{KvsClient, Result, ADDRESS_FORMAT, DEFAULT_LISTENING_ADDRESS};
 
-#[derive(Debug, Clap)]
+#[derive(Clap, Debug)]
 #[clap(name = "kvs-client", version, author, about)]
 struct Opt {
     #[clap(subcommand)]
     command: Command,
 }
 
-#[derive(Debug, Clap)]
+#[derive(Clap, Debug)]
 enum Command {
     #[clap(name = "get", about = "Get the string value of a given string key")]
     Get {
@@ -62,29 +62,29 @@ enum Command {
 
 fn main() {
     let opt: Opt = Opt::parse();
-    if let Err(e) = run(opt) {
+    if let Err(e) = smol::block_on(run(opt)) {
         eprintln!("{}", e);
         exit(1);
     }
 }
 
-fn run(opt: Opt) -> Result<()> {
+async fn run(opt: Opt) -> Result<()> {
     match opt.command {
         Command::Get { key, addr } => {
-            let mut client = KvsClient::connect(addr)?;
-            if let Some(value) = client.get(key)? {
+            let mut client = KvsClient::connect(addr).await?;
+            if let Some(value) = client.get(key).await? {
                 println!("{}", value);
             } else {
                 println!("Key not found");
             }
         }
         Command::Set { key, value, addr } => {
-            let mut client = KvsClient::connect(addr)?;
-            client.set(key, value)?;
+            let mut client = KvsClient::connect(addr).await?;
+            client.set(key, value).await?;
         }
         Command::Remove { key, addr } => {
-            let mut client = KvsClient::connect(addr)?;
-            client.remove(key)?;
+            let mut client = KvsClient::connect(addr).await?;
+            client.remove(key).await?;
         }
     }
     Ok(())

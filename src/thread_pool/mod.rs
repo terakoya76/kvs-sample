@@ -12,7 +12,7 @@ pub use self::shared_queue::SharedQueueThreadPool;
 use crate::Result;
 
 /// The trait that all thread pools should implement.
-pub trait ThreadPool {
+pub trait ThreadPool: Clone + Send + Sync + 'static {
     /// Creates a new thread pool, immediately spawning the specified number of
     /// threads.
     ///
